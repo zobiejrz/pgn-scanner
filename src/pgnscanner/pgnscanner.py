@@ -2,6 +2,8 @@ import typer
 from typing_extensions import Annotated
 import chess
 import chess.pgn
+import requests
+import chess.engine
 
 class Node:
   """
@@ -168,12 +170,95 @@ class PGNScanner:
     status = "Terminal" if self.current.terminal else "Non-terminal"
     print(f"\nStatus: {status}\n")
 
+  def cmd_top(self, X: int = 5):
+    """
+    Show top X moves for the current position from Lichess, sorted by engine evaluation.
+    Negative X shows the most common worst moves.
+    """
+    fen = self.current.board.fen()
+    print(f"Fetching move stats for FEN:\n{fen}")
+
+    # Step 1: Query Lichess
+    response = requests.get(
+      "https://explorer.lichess.ovh/lichess",
+      params={
+        "variant": "standard",
+        "fen": fen,
+        "speeds": "blitz,rapid",
+        "ratings": "1200,1400,1600,1800,2000",
+        "moves": "20",
+        "topGames": "0",
+        "recentGames": "0",
+        "history": "false"
+        }
+      )
+    if response.status_code != 200:
+      print("Error fetching Lichess stats")
+      print(response)
+      print(response.text)
+      return
+    print("Got response from lichess")
+    moves_stats = response.json()["moves"]
+
+    if not moves_stats:
+      print("No data available for this position")
+      return
+
+    # Step 2: Evaluate each move with Stockfish
+    engine_path = "stockfish"
+    engine = chess.engine.SimpleEngine.popen_uci(engine_path)
+    engine.configure({"Threads": 4})
+
+    results = []
+    board = self.current.board
+    print("Starting stockfish analysis")
+    for move_data in moves_stats:
+      move = chess.Move.from_uci(move_data["uci"])
+      if move not in board.legal_moves:
+          continue
+
+      # engine evaluation
+      info = engine.analyse(board, chess.engine.Limit(depth=15), root_moves=[move])
+      score = info["score"].white().score(mate_score=100000)
+
+      # temporary value used for sorting
+      if self.current.board.turn == chess.WHITE:
+        score_for_sort = score
+      else:
+        score_for_sort = -score
+
+      popularity = move_data["white"] + move_data["black"] + move_data["draws"]
+
+      results.append({
+        "san": move_data["san"],
+        "uci": move_data["uci"],
+        "popularity": popularity,
+        "score": score,
+        "score_for_sort": score_for_sort
+      })
+
+    engine.quit()
+
+    # Step 3: sort
+    display_X = X
+    if X > 0:
+      results.sort(key=lambda r: (-r["score_for_sort"], -r["popularity"]))
+    else:
+      results.sort(key=lambda r: (r["score_for_sort"], -r["score"]))
+      display_X = -X
+
+    # Step 4: print top X
+    print(f"{"Worst" if X < 0 else "Best"} {display_X} moves for {"white" if self.current.board.turn else "black"}:")
+    for r in results[:display_X]:
+      eval_str = f"{r['score']/100:.2f}" if r["score"] is not None else "Mate"
+      print(f"{r['san']:6} | popularity={r['popularity']:5} | eval={eval_str}")
+
   def run(self):
     """
     Interactive loop
     """
     print("Entering PGN scanner interactive mode.")
-    print("Type a command (print, fen, add, next, terminal, tree, output, quit).")
+    print("Type a command (print, fen, add, next, terminal, top, tree, output, quit).")
 
     while True:
       try:
@@ -201,6 +286,13 @@ class PGNScanner:
         self.cmd_next()
       elif cmd == "terminal":
         self.cmd_terminal()
+      elif cmd == "top":
+        try:
+          X = int(arg) if arg else 5
+        except ValueError:
+          print("Usage: top <X> (integer, positive or negative)")
+          continue
+        self.cmd_top(X)
       elif cmd == "tree":
         self.cmd_tree()
       elif cmd == "output" and arg:
