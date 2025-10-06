@@ -14,7 +14,7 @@ It also integrates Stockfish for move evaluations and can fetch move statistics 
 pip install -r requirements.txt
 ```
 
-- Requires Python 3.9+
+- Requires Python 3.12+
 - Make sure [Stockfish](https://stockfishchess.org/download/) is installed and available, or provide the path to the binary in the REPL configuration.
 
 ## Usage
