@@ -175,8 +175,14 @@ class PGNScanner:
     Show top X moves for the current position from Lichess, sorted by engine evaluation.
     Negative X shows the most common worst moves.
     """
-    fen = self.current.board.fen()
-    print(f"Fetching move stats for FEN:\n{fen}")
+    board_copy = self.root.board.copy()
+    while board_copy.move_stack:
+      board_copy.pop()
+
+    fen = board_copy.fen()
+    uci_moves = [move.uci() for move in self.current.board.move_stack]
+    uci_str = ",".join(uci_moves)
+    print(f"Fetching move stats...")
 
     # Step 1: Query Lichess
     response = requests.get(
@@ -184,6 +190,7 @@ class PGNScanner:
       params={
         "variant": "standard",
         "fen": fen,
+        "play": uci_str,
         "speeds": "blitz,rapid",
         "ratings": "1200,1400,1600,1800,2000",
         "moves": "20",
@@ -228,13 +235,19 @@ class PGNScanner:
         score_for_sort = -score
 
       popularity = move_data["white"] + move_data["black"] + move_data["draws"]
+      
+      # Opening information (if any)
+      opening_name="Unnamed"
+      if move_data["opening"] is not None:
+        opening_name = move_data["opening"]["name"]
 
       results.append({
         "san": move_data["san"],
         "uci": move_data["uci"],
         "popularity": popularity,
         "score": score,
-        "score_for_sort": score_for_sort
+        "score_for_sort": score_for_sort,
+        "opening": opening_name
       })
 
     engine.quit()
@@ -251,7 +264,7 @@ class PGNScanner:
     print(f"{"Worst" if X < 0 else "Best"} {display_X} moves for {"white" if self.current.board.turn else "black"}:")
     for r in results[:display_X]:
       eval_str = f"{r['score']/100:.2f}" if r["score"] is not None else "Mate"
-      print(f"{r['san']:6} | popularity={r['popularity']:5} | eval={eval_str}")
+      print(f"{r['san']:6} | popularity={r['popularity']:12} | eval={eval_str:10} | opening={r["opening"]}")
 
   def run(self):
     """
