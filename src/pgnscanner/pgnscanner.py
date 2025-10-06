@@ -16,10 +16,20 @@ class PGNScanner:
   """
   Manages the DFS traversal and REPL loop.
   """
-  def __init__(self):
+  def __init__(self, starting_moves=None):
     self.root = Node(chess.Board())
     self.current = self.root
     self.stack: list[tuple[str, Node]] = []  # for DFS traversal
+
+    starting_moves = starting_moves or []
+    for move_str in starting_moves:
+      try:
+        move = self.parse_move(move_str)
+      except ValueError:
+        raise typer.BadParameter(f"Bad move in this position: '{move_str}'")
+
+      # Apply valid move
+      self.root.board.push(move)
 
   def cmd_fen(self):
     print(self.current.board.fen())
@@ -178,8 +188,21 @@ class PGNScanner:
       else:
         print("Unknown command or missing argument.")
 
-def pgnscanner():
+def pgnscanner(start: str = typer.Option(
+    None,
+    "--start",
+    "-s",
+    help="Comma-separated list of starting moves (SAN or UCI)"
+)):
   """
   Entry function called from Typer.
   """
-  PGNScanner().run()
+  # Parse starting moves into a list
+  moves = [m.strip() for m in start.split(",")] if start else []
+  
+  try:
+    scanner = PGNScanner(starting_moves=moves)
+  except typer.BadParameter as e:
+    typer.echo(f"{e}", err=True)
+    return
+  scanner.run()
