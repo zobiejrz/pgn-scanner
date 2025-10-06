@@ -1,0 +1,185 @@
+import typer
+from typing_extensions import Annotated
+import chess
+import chess.pgn
+
+class Node:
+  """
+  Represents one position in the opening tree.
+  """
+  def __init__(self, board: chess.Board):
+    self.board = board.copy()
+    self.children: dict[str, "Node"] = {}
+    self.terminal = False
+
+class PGNScanner:
+  """
+  Manages the DFS traversal and REPL loop.
+  """
+  def __init__(self):
+    self.root = Node(chess.Board())
+    self.current = self.root
+    self.stack: list[tuple[str, Node]] = []  # for DFS traversal
+
+  def cmd_fen(self):
+    print(self.current.board.fen())
+
+  def cmd_add(self, moves_str: str):
+    # split comma-separated SAN/UCI moves
+    for move_str in moves_str.split(","):
+      move_str = move_str.strip()
+      try:
+        move = self.parse_move(move_str)
+        self._add_move(move)
+      except ValueError:
+        print(f"'{move_str}' is not a valid move.")
+
+  def cmd_next(self):
+    # Find a non-terminal child to visit next
+    for fen, child in self.current.children.items():
+      if not child.terminal:
+        self.stack.append(self.current)
+        self.current = child
+        print(f"Moved to next node. Current FEN:\n{self.current.board.fen()}")
+        return
+
+    # If all children are terminal, backtrack
+    while self.stack:
+      parent = self.stack.pop()
+      # find next unexplored sibling
+      for fen, child in parent.children.items():
+        if not child.terminal and child is not self.current:
+          self.current = child
+          print(f"Moved to next sibling. FEN:\n{self.current.board.fen()}")
+          return
+      # continue up if no unexplored siblings
+
+    # Reached end of DFS
+    print("All nodes are terminal.")
+    choice = input("Would you like to output the PGN file? (y/n) ").lower()
+    if choice.startswith("y"):
+      filename = input("Output file name: ").strip()
+      if filename:
+        self.cmd_output(filename)
+
+  def cmd_terminal(self):
+    self.current.terminal = True
+    print("Marked as terminal")
+
+  def cmd_tree(self):
+    """
+    Display the move tree and return the number of terminal lines.
+    """
+    print("Current move tree:\n")
+
+    def recurse(node: Node, depth: int = 0, prefix_moves: list[chess.Move] = []):
+      lines = 0
+      indent = "  " * depth
+
+      # Terminal node (end of a line)
+      if node.terminal or not node.children:
+        san_line = " ".join(self.root.board.san(m) for m in prefix_moves)
+        print(f"{indent}{san_line} (terminal)")
+        return 1
+
+      # Non-terminal: explore children
+      for child in node.children.values():
+        move = child.board.move_stack[-1]
+        san_move = self.root.board.san(move) if not prefix_moves else node.board.san(move)
+        print(f"{indent}{san_move}")
+        lines += recurse(child, depth + 1, prefix_moves + [move])
+
+      return lines
+
+    total_lines = recurse(self.root)
+    print(f"\nTotal lines: {total_lines}")
+    return total_lines
+
+  def cmd_output(self, filename: str):
+    print(f"Writing PGN database to {filename} ...")
+
+    games: list[chess.pgn.Game] = []
+
+    def dfs(node: Node, moves: list[chess.Move]):
+      # If node is terminal, write out a game
+      if node.terminal or not node.children:
+        game = chess.pgn.Game()
+        board = chess.Board()
+        node_ptr = game
+        for move in moves:
+          node_ptr = node_ptr.add_variation(move)
+          board.push(move)
+        games.append(game)
+      else:
+        for child in node.children.values():
+          # Determine move that leads to this child
+          move = child.board.move_stack[-1]
+          dfs(child, moves + [move])
+
+    dfs(self.root, [])
+
+    # Write all games to file
+    with open(filename, "w") as f:
+      for game in games:
+        print(game, file=f, end="\n\n")
+
+    print(f"✅ Wrote {len(games)} games to {filename}")
+
+  def parse_move(self, move_str: str) -> chess.Move:
+    # Try SAN first, then UCI
+    try:
+      return self.current.board.parse_san(move_str)
+    except ValueError:
+      return chess.Move.from_uci(move_str)
+  
+  def _add_move(self, move: chess.Move):
+    new_board = self.current.board.copy()
+    new_board.push(move)
+    key = new_board.fen()
+    if key not in self.current.children:
+      self.current.children[key] = Node(new_board)
+    print(f"Added move: {move.uci()}")
+
+  def run(self):
+    """
+    Interactive loop
+    """
+    print("Entering PGN scanner interactive mode.")
+    print("Type a command (fen, add, next, terminal, tree, output, quit).")
+
+    while True:
+      try:
+        raw = input("> ").strip()
+      except (EOFError, KeyboardInterrupt):
+        print("\nExiting.")
+        break
+
+      if not raw:
+        continue
+
+      parts = raw.split(maxsplit=1)
+      cmd = parts[0]
+      arg = parts[1] if len(parts) > 1 else None
+
+      if cmd == "quit":
+        break
+      elif cmd == "fen":
+        self.cmd_fen()
+      elif cmd == "add" and arg:
+        self.cmd_add(arg)
+      elif cmd == "next":
+        self.cmd_next()
+      elif cmd == "terminal":
+        self.cmd_terminal()
+      elif cmd == "tree":
+        self.cmd_tree()
+      elif cmd == "output" and arg:
+        self.cmd_output(arg)
+      else:
+        print("Unknown command or missing argument.")
+
+def pgnscanner():
+  """
+  Entry function called from Typer.
+  """
+  PGNScanner().run()
