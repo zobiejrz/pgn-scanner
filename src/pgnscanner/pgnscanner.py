@@ -150,12 +150,30 @@ class PGNScanner:
       self.current.children[key] = Node(new_board)
     print(f"Added move: {move.uci()}")
 
+  def cmd_print(self):
+    """
+    Pretty-print current node information: board, FEN, move stack.
+    """
+    board = self.current.board
+
+    # Header
+    print("\033[1;34m=== Current Position ===\033[0m")  # bold blue
+    print(f"\033[1;33mFEN:\033[0m {board.fen()}")      # yellow FEN
+
+    # Board (ASCII)
+    print("\n\033[1;32mBoard:\033[0m")  # green label
+    print(board.unicode(borders=True))  # prettier chess board
+
+    # Terminal status
+    status = "Terminal" if self.current.terminal else "Non-terminal"
+    print(f"\nStatus: {status}\n")
+
   def run(self):
     """
     Interactive loop
     """
     print("Entering PGN scanner interactive mode.")
-    print("Type a command (fen, add, next, terminal, tree, output, quit).")
+    print("Type a command (print, fen, add, next, terminal, tree, output, quit).")
 
     while True:
       try:
@@ -175,6 +193,8 @@ class PGNScanner:
         break
       elif cmd == "fen":
         self.cmd_fen()
+      elif cmd == "print":
+        self.cmd_print()
       elif cmd == "add" and arg:
         self.cmd_add(arg)
       elif cmd == "next":
