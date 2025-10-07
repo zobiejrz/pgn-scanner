@@ -6,13 +6,21 @@ import requests
 import chess.engine
 
 class Node:
-  """
-  Represents one position in the opening tree.
-  """
-  def __init__(self, board: chess.Board):
-    self.board = board.copy()
-    self.children: dict[str, "Node"] = {}
-    self.terminal = False
+    """
+    Represents one position in the opening tree.
+    """
+    def __init__(self, board=None, parent=None):
+        self.board = board.copy()
+        self.children: dict[str, "Node"] = {}
+        self.terminal = False
+
+        # parent pointer (may be None for root)
+        self.parent: "Node | None" = parent
+
+        # visited indicates we've already visited this node during DFS traversal
+        # (used by cmd_next to avoid revisiting nodes)
+        self.visited: bool = False
+
 
 class PGNScanner:
   """
@@ -20,8 +28,12 @@ class PGNScanner:
   """
   def __init__(self, starting_moves=None):
     self.root = Node(chess.Board())
+    # treat the root as already 'visited' so we won't try to revisit it as
+    # a child later in DFS traversal
+    self.root.visited = True
+
     self.current = self.root
-    self.stack: list[tuple[str, Node]] = []  # for DFS traversal
+    self.stack: list[Node] = []  # stack of parent nodes for DFS backtracking
 
     starting_moves = starting_moves or []
     for move_str in starting_moves:
@@ -30,8 +42,15 @@ class PGNScanner:
       except ValueError:
         raise typer.BadParameter(f"Bad move in this position: '{move_str}'")
 
-      # Apply valid move
-      self.root.board.push(move)
+      if move not in self.current.board.legal_moves:
+        raise typer.BadParameter(f"Illegal move in this starting sequence: '{move_str}'")
+
+      # add and move current forward to reflect starting moves
+      child = self._add_move(move)
+      # starting moves are considered already visited (they form the initial path)
+      child.visited = True
+      self.current = child
+
 
   def cmd_fen(self):
     print(self.current.board.fen())
@@ -47,27 +66,34 @@ class PGNScanner:
         print(f"'{move_str}' is not a valid move.")
 
   def cmd_next(self):
-    # Find a non-terminal child to visit next
-    for fen, child in self.current.children.items():
-      if not child.terminal:
+    # Try to descend to an unvisited child of the current node
+    for child in self.current.children.values():
+      if not child.visited:
+        # push current so we can come back to it later
         self.stack.append(self.current)
+        child.visited = True
         self.current = child
         print(f"Moved to next node. Current FEN:\n{self.current.board.fen()}")
         return
 
-    # If all children are terminal, backtrack
+    # no unvisited children at current -> backtrack until we find a parent with
+    # an unvisited child
     while self.stack:
       parent = self.stack.pop()
-      # find next unexplored sibling
-      for fen, child in parent.children.items():
-        if not child.terminal and child is not self.current:
+      # find first unvisited child of this parent
+      for child in parent.children.values():
+        if not child.visited:
+          # We will descend into this child; push parent back on stack,
+          # because it may still have more children later.
+          self.stack.append(parent)
+          child.visited = True
           self.current = child
           print(f"Moved to next sibling. FEN:\n{self.current.board.fen()}")
           return
-      # continue up if no unexplored siblings
+      # parent had no unvisited children; continue popping to go further up
 
-    # Reached end of DFS
-    print("All nodes are terminal.")
+    # If we reach here, entire reachable tree has been visited
+    print("All nodes have been visited (or are terminal).")
     choice = input("Would you like to output the PGN file? (y/n) ").lower()
     if choice.startswith("y"):
       filename = input("Output file name: ").strip()
@@ -84,20 +110,33 @@ class PGNScanner:
     """
     print("Current move tree:\n")
 
-    def recurse(node: Node, depth: int = 0, prefix_moves: list[chess.Move] = []):
+    def moves_to_san(moves: list[chess.Move]) -> str:
+      b = self.root.board.copy()
+      sans = []
+      for mv in moves:
+        sans.append(b.san(mv))
+        b.push(mv)
+      return " ".join(sans) if sans else "(starting position)"
+
+    def recurse(node: Node, depth: int = 0, prefix_moves: list[chess.Move] | None = None):
+      if prefix_moves is None:
+        prefix_moves = []
+
       lines = 0
       indent = "  " * depth
 
       # Terminal node (end of a line)
       if node.terminal or not node.children:
-        san_line = " ".join(self.root.board.san(m) for m in prefix_moves)
+        san_line = moves_to_san(prefix_moves)
         print(f"{indent}{san_line} (terminal)")
         return 1
 
       # Non-terminal: explore children
       for child in node.children.values():
+        # the move that leads from `node` to `child` is the last move on child's stack
         move = child.board.move_stack[-1]
-        san_move = self.root.board.san(move) if not prefix_moves else node.board.san(move)
+        # SAN for that move must be computed on the parent node's board
+        san_move = node.board.san(move)
         print(f"{indent}{san_move}")
         lines += recurse(child, depth + 1, prefix_moves + [move])
 
@@ -135,7 +174,7 @@ class PGNScanner:
       for game in games:
         print(game, file=f, end="\n\n")
 
-    print(f"✅ Wrote {len(games)} games to {filename}")
+    print(f"Wrote {len(games)} games to {filename}")
 
   def parse_move(self, move_str: str) -> chess.Move:
     # Try SAN first, then UCI
@@ -144,13 +183,24 @@ class PGNScanner:
     except ValueError:
       return chess.Move.from_uci(move_str)
   
-  def _add_move(self, move: chess.Move):
+  def _add_move(self, move: chess.Move) -> Node:
+    """
+    Create (or reuse) the child node reached by `move` from self.current.
+    Returns the child node.
+    """
     new_board = self.current.board.copy()
     new_board.push(move)
     key = new_board.fen()
     if key not in self.current.children:
-      self.current.children[key] = Node(new_board)
+      child = Node(new_board, parent=self.current)
+      # new children start unvisited
+      child.visited = False
+      self.current.children[key] = child
+    else:
+      child = self.current.children[key]
     print(f"Added move: {move.uci()}")
+    return child
+
 
   def cmd_print(self):
     """
