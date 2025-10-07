@@ -182,3 +182,6 @@ cython_debug/
 
 # venv being used
 venv/
+
+# don't upload PGNs
+*.pgn
